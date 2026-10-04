@@ -9,6 +9,8 @@
   const BLITZ_SECONDS = 60;
   const MASTERY_STREAK = 3; // consecutive correct answers needed to clear a missed question
   const XP_PER_CORRECT = 10;
+  const FLASH_MASTERY = 2; // consecutive "Got it" ratings needed to master a flashcard
+  const MATCH_PAIRS = 6;
 
   const CHAPTERS = [
     { id: "3", title: "Chapter 3 — Tools of the Laboratory" },
@@ -33,11 +35,14 @@
     { id: "perfect", name: "Perfect Quiz", desc: "Score 100% on a quiz of 5+ questions" },
     { id: "examAce", name: "Exam Ace", desc: "Score 90%+ on an exam of 10+ questions" },
     { id: "comeback", name: "Comeback Kid", desc: "Master 5 missed questions" },
-    { id: "blitz10", name: "Blitz Runner", desc: "10 correct in one Timed Blitz" }
+    { id: "blitz10", name: "Blitz Runner", desc: "10 correct in one Timed Blitz" },
+    { id: "cards10", name: "Card Shark", desc: "Master 10 flashcards" },
+    { id: "matchMaker", name: "Match Maker", desc: "Finish a Match Game" }
   ];
 
   const app = document.getElementById("app");
   const bank = (typeof QUESTIONS !== "undefined" && Array.isArray(QUESTIONS)) ? QUESTIONS : [];
+  const cardBank = (typeof FLASHCARDS !== "undefined" && Array.isArray(FLASHCARDS)) ? FLASHCARDS : [];
   const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // ---------- Helpers ----------
@@ -126,7 +131,7 @@
 
   // ---------- Progress storage ----------
   function emptyProgress() {
-    return { answered: 0, correct: 0, questions: {}, xp: 0, bestStreak: 0, badges: {}, blitzBest: {} };
+    return { answered: 0, correct: 0, questions: {}, xp: 0, bestStreak: 0, badges: {}, blitzBest: {}, cards: {}, matchBest: {} };
   }
 
   function loadProgress() {
@@ -137,6 +142,8 @@
         p.bestStreak = p.bestStreak || 0;
         p.badges = p.badges || {};
         p.blitzBest = p.blitzBest || {};
+        p.cards = p.cards || {};
+        p.matchBest = p.matchBest || {};
         return p;
       }
     } catch (e) { /* fall through */ }
@@ -176,10 +183,21 @@
     return Object.keys(progress.questions).filter(function (k) { return progress.questions[k].mastered; }).length;
   }
 
+  function addXP(amount) {
+    const before = levelInfo(progress.xp).level;
+    progress.xp += amount;
+    saveProgress();
+    const after = levelInfo(progress.xp);
+    if (after.level > before) {
+      toast("Level up! Level " + after.level + ": " + after.title);
+      sfx.fanfare();
+      confetti(50);
+    }
+  }
+
   // streak = consecutive correct answers including this one (0 if wrong). Returns XP earned.
   function recordAnswer(id, isCorrect, streak) {
     const q = progress.questions[id] || (progress.questions[id] = { correct: 0, wrong: 0, streak: 0, review: false, mastered: false });
-    const levelBefore = levelInfo(progress.xp).level;
     let xp = 0;
     progress.answered++;
     if (isCorrect) {
@@ -188,7 +206,7 @@
       q.streak++;
       if (q.review && q.streak >= MASTERY_STREAK) { q.review = false; q.mastered = true; }
       xp = XP_PER_CORRECT + Math.min(Math.max(streak - 1, 0), 5) * 2;
-      progress.xp += xp;
+      addXP(xp);
     } else {
       q.wrong++;
       q.streak = 0;
@@ -203,13 +221,6 @@
     if (streak >= 5) unlock("streak5");
     if (streak >= 10) unlock("streak10");
     if (masteredCount() >= 5) unlock("comeback");
-
-    const after = levelInfo(progress.xp);
-    if (after.level > levelBefore) {
-      toast("Level up! Level " + after.level + ": " + after.title);
-      sfx.fanfare();
-      confetti(50);
-    }
     return xp;
   }
 
@@ -243,10 +254,14 @@
   // ---------- Blitz timer ----------
   let blitzTimer = null;
   let activeBlitz = null;
+  let matchTimer = null;
+  let activeKeys = null; // keyboard handler for the current flashcard deck
 
   function stopTimer() {
     if (blitzTimer) { clearInterval(blitzTimer); blitzTimer = null; }
+    if (matchTimer) { clearInterval(matchTimer); matchTimer = null; }
     if (activeBlitz) { activeBlitz.over = true; activeBlitz = null; }
+    activeKeys = null;
   }
 
   // ---------- Views ----------
@@ -274,6 +289,7 @@
     const cards = CHAPTERS.map(function (c) { return card(c, "", "Chapter " + c.id); });
     cards.push(card(ALL, "all", "Mix"));
     cards.push(card(REVIEW, "review", "Practice"));
+    cards.push(flashTile());
 
     const earned = BADGES.filter(function (b) { return progress.badges[b.id]; }).length;
 
@@ -623,6 +639,290 @@
     ]);
   }
 
+  // ---------- Flashcards ----------
+  const LEARNING = { id: "learning", title: "Still Learning" };
+
+  function flashPool(id) {
+    if (id === "all") return cardBank.slice();
+    if (id === "learning") return cardBank.filter(function (c) { const s = progress.cards[c.id]; return s && s.learning; });
+    return cardBank.filter(function (c) { return c.chapter === id; });
+  }
+
+  function cardState(id) {
+    return progress.cards[id] || (progress.cards[id] = { known: 0, miss: 0, streak: 0, learning: false, mastered: false });
+  }
+
+  function flashMastered() {
+    return cardBank.filter(function (c) { const s = progress.cards[c.id]; return s && s.mastered; }).length;
+  }
+
+  function flashTile() {
+    const n = cardBank.length;
+    return h("button", { class: "card flash", type: "button", onclick: flashHome }, [
+      h("span", { class: "tag" }, "Flashcards"),
+      h("span", { class: "title" }, "Flashcard Arena"),
+      h("span", { class: "meta" }, n + (n === 1 ? " card" : " cards") + " · flip, sort, and match")
+    ]);
+  }
+
+  function flashHome() {
+    stopTimer();
+    function choice(ch, tag, cls) {
+      const n = flashPool(ch.id).length;
+      return h("button", { class: "card " + cls, type: "button", disabled: n === 0, onclick: function () { flashModeView(ch); } }, [
+        h("span", { class: "tag" }, tag),
+        h("span", { class: "title" }, ch.title),
+        h("span", { class: "meta" }, n + (n === 1 ? " card" : " cards"))
+      ]);
+    }
+    const items = CHAPTERS.map(function (c) { return choice(c, "Chapter " + c.id, ""); });
+    items.push(choice(ALL, "Mix", "all"));
+    items.push(choice(LEARNING, "Practice", "review"));
+    render([
+      h("h1", {}, "Flashcard Arena"),
+      h("p", { class: "sub" }, cardBank.length
+        ? "Mastered " + flashMastered() + " of " + cardBank.length + " cards. Choose a deck."
+        : "No flashcards yet. Add them to flashcards.js."),
+      h("div", { class: "grid" }, items),
+      h("div", { class: "actions" }, h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home"))
+    ]);
+  }
+
+  function flashModeView(ch) {
+    stopTimer();
+    const n = flashPool(ch.id).length;
+    const best = progress.matchBest[ch.id];
+    render([
+      h("h1", {}, ch.title),
+      h("p", { class: "sub" }, "Choose a game." + (best ? " Best match time: " + best + "s." : "")),
+      h("div", { class: "grid" }, [
+        h("button", { class: "card flash", type: "button", disabled: n === 0, onclick: function () { startDeck(ch); } }, [
+          h("span", { class: "tag" }, "Learn"),
+          h("span", { class: "title" }, "Flip Deck"),
+          h("span", { class: "meta" }, "Flip each card, then rate yourself. Missed cards come back. (" + n + " cards)")
+        ]),
+        h("button", { class: "card flash", type: "button", disabled: n < 3, onclick: function () { startMatch(ch); } }, [
+          h("span", { class: "tag" }, "Challenge"),
+          h("span", { class: "title" }, "Match Game"),
+          h("span", { class: "meta" }, n < 3 ? "Needs at least 3 cards." : "Pair terms with definitions as fast as you can.")
+        ])
+      ]),
+      h("div", { class: "actions" }, [
+        h("button", { class: "btn secondary", type: "button", onclick: flashHome }, "Back"),
+        h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home")
+      ])
+    ]);
+  }
+
+  function startDeck(ch, subset) {
+    stopTimer();
+    const cards = shuffle(subset || flashPool(ch.id));
+    if (!cards.length) return;
+    showCard({ ch: ch, cards: cards, index: 0, got: 0, streak: 0, learn: [], flipped: false, rated: false }, false);
+  }
+
+  function showCard(game, quiet) {
+    const card = game.cards[game.index];
+    const total = game.cards.length;
+    game.flipped = false;
+    game.rated = false;
+
+    const flip = h("div", { class: "flip", tabindex: "0", role: "button", "aria-label": "Flashcard. Activate to flip.", onclick: doFlip },
+      h("div", { class: "flip-inner" }, [
+        h("div", { class: "face front" }, [
+          h("div", { class: "topic" }, card.topic || ""),
+          h("div", { class: "face-text" }, card.front),
+          h("div", { class: "hint" }, "Tap to flip")
+        ]),
+        h("div", { class: "face back" }, [
+          h("div", { class: "topic" }, "Answer"),
+          h("div", { class: "face-text" }, card.back),
+          card.slide ? h("div", { class: "slide-ref" }, "Review: " + card.slide) : null
+        ])
+      ]));
+    const flipBtn = h("button", { class: "btn", type: "button", onclick: doFlip }, "Flip card");
+    const gotBtn = h("button", { class: "btn good", type: "button", onclick: function () { rate(true); } }, "Got it");
+    const learnBtn = h("button", { class: "btn bad", type: "button", onclick: function () { rate(false); } }, "Still learning");
+    gotBtn.style.display = "none";
+    learnBtn.style.display = "none";
+
+    function doFlip() {
+      flip.classList.toggle("flipped");
+      if (!game.flipped) {
+        game.flipped = true;
+        gotBtn.style.display = "";
+        learnBtn.style.display = "";
+        flipBtn.textContent = "Flip again";
+      }
+    }
+
+    function rate(known) {
+      if (!game.flipped) { doFlip(); return; }
+      if (game.rated) return;
+      game.rated = true;
+      const s = cardState(card.id);
+      if (known) {
+        s.known++;
+        s.streak++;
+        game.got++;
+        game.streak++;
+        if (s.streak >= FLASH_MASTERY) {
+          if (!s.mastered) toast("Card mastered!");
+          s.mastered = true;
+          s.learning = false;
+        }
+        sfx.correct();
+        addXP(5 + Math.min(game.streak - 1, 5));
+      } else {
+        s.miss++;
+        s.streak = 0;
+        s.learning = true;
+        s.mastered = false;
+        game.streak = 0;
+        game.learn.push(card);
+        sfx.wrong();
+      }
+      saveProgress();
+      if (flashMastered() >= 10) unlock("cards10");
+      game.index++;
+      if (game.index >= total) finishDeck(game); else showCard(game, true);
+    }
+
+    activeKeys = function (e) {
+      if (e.key === "ArrowRight") rate(true);
+      else if (e.key === "ArrowLeft") rate(false);
+      else if ((e.key === " " || e.key === "Enter") && !(e.target && e.target.tagName === "BUTTON")) { e.preventDefault(); doFlip(); }
+    };
+
+    render([
+      h("div", { class: "topbar" }, [
+        h("span", {}, "Flashcards · " + game.ch.title),
+        h("span", {}, ["Card ", h("b", {}, game.index + 1), " of ", total]),
+        h("span", {}, ["Got it: ", h("b", {}, game.got), " ", streakChip(game)])
+      ]),
+      h("div", { class: "bar" }, h("i", { style: "width:" + pct(game.index, total) + "%" })),
+      flip,
+      h("p", { class: "key-hint" }, "Space: flip · Right arrow: Got it · Left arrow: Still learning"),
+      h("div", { class: "actions" }, [flipBtn, gotBtn, learnBtn]),
+      h("div", { class: "actions" }, [
+        h("button", { class: "btn secondary", type: "button", onclick: function () { startDeck(game.ch); } }, "Restart"),
+        h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home")
+      ])
+    ], quiet);
+  }
+
+  function finishDeck(game) {
+    const total = game.cards.length;
+    const p = pct(game.got, total);
+    activeKeys = null;
+    addXP(10);
+    if (p >= 80) { confetti(70); sfx.fanfare(); }
+    const again = game.learn.length;
+    render([
+      h("h1", {}, "Deck Complete"),
+      scoreBox(game.ch.title, game.got, total),
+      h("p", { class: "sub", style: "margin-top:12px" }, "Got it: " + game.got + " · Still learning: " + again + " · +10 XP deck bonus"),
+      h("div", { class: "actions" }, [
+        again ? h("button", { class: "btn", type: "button", onclick: function () { startDeck(game.ch, game.learn); } }, "Review Still Learning (" + again + ")") : null,
+        h("button", { class: again ? "btn secondary" : "btn", type: "button", onclick: function () { startDeck(game.ch); } }, "Restart Deck"),
+        h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home")
+      ])
+    ]);
+  }
+
+  function startMatch(ch) {
+    stopTimer();
+    const pool = flashPool(ch.id);
+    if (pool.length < 3) return;
+    const set = shuffle(pool).slice(0, MATCH_PAIRS);
+    const game = { ch: ch, left: set.length, mistakes: 0, selected: null, startedAt: Date.now() };
+
+    function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+
+    function select(el, card, side) {
+      el.classList.add("selected");
+      game.selected = { el: el, card: card, side: side };
+    }
+
+    function pickTile(el, card, side) {
+      if (el.disabled) return;
+      const sel = game.selected;
+      if (!sel) { select(el, card, side); return; }
+      if (sel.el === el) { el.classList.remove("selected"); game.selected = null; return; }
+      if (sel.side === side) { sel.el.classList.remove("selected"); select(el, card, side); return; }
+      sel.el.classList.remove("selected");
+      game.selected = null;
+      if (sel.card.id === card.id) {
+        [sel.el, el].forEach(function (t) { t.classList.add("matched"); t.disabled = true; });
+        game.left--;
+        sfx.correct();
+        addXP(5);
+        setText("match-left", game.left);
+        if (game.left === 0) endMatch(game);
+      } else {
+        game.mistakes++;
+        sfx.wrong();
+        setText("match-miss", game.mistakes);
+        [sel.el, el].forEach(function (t) { t.classList.add("wrong"); });
+        setTimeout(function () { [sel.el, el].forEach(function (t) { t.classList.remove("wrong"); }); }, 450);
+      }
+    }
+
+    function tile(card, side) {
+      const el = h("button", { class: "match-tile " + side, type: "button" }, side === "term" ? card.front : card.back);
+      el.addEventListener("click", function () { pickTile(el, card, side); });
+      return el;
+    }
+
+    matchTimer = setInterval(function () {
+      setText("match-time", Math.floor((Date.now() - game.startedAt) / 1000) + "s");
+    }, 500);
+
+    render([
+      h("div", { class: "topbar" }, [
+        h("span", {}, "Match Game · " + ch.title),
+        h("span", {}, ["Time: ", h("b", { id: "match-time" }, "0s")]),
+        h("span", {}, ["Left: ", h("b", { id: "match-left" }, game.left), " · Mistakes: ", h("b", { id: "match-miss" }, 0)])
+      ]),
+      h("p", { class: "sub" }, "Tap a term, then tap its matching definition."),
+      h("div", { class: "match-grid" }, [
+        h("div", { class: "match-col" }, shuffle(set).map(function (c) { return tile(c, "term"); })),
+        h("div", { class: "match-col" }, shuffle(set).map(function (c) { return tile(c, "def"); }))
+      ]),
+      h("div", { class: "actions" }, [
+        h("button", { class: "btn secondary", type: "button", onclick: function () { startMatch(ch); } }, "New Round"),
+        h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home")
+      ])
+    ]);
+  }
+
+  function endMatch(game) {
+    const secs = Math.max(1, Math.round((Date.now() - game.startedAt) / 1000));
+    stopTimer();
+    const prev = progress.matchBest[game.ch.id];
+    const isBest = !prev || secs < prev;
+    if (isBest) progress.matchBest[game.ch.id] = secs;
+    saveProgress();
+    const bonus = game.mistakes === 0 ? 20 : 10;
+    addXP(bonus);
+    unlock("matchMaker");
+    confetti(70);
+    sfx.fanfare();
+    render([
+      h("h1", {}, "All Matched!"),
+      h("div", { class: "score-big" }, [
+        h("div", {}, game.ch.title),
+        h("div", { class: "pct" }, secs + "s"),
+        h("div", {}, game.mistakes + (game.mistakes === 1 ? " mistake" : " mistakes") + " · +" + bonus + " XP bonus"),
+        h("div", { class: "meta", style: "margin-top:8px" }, isBest ? "New best time!" : "Best: " + prev + "s")
+      ]),
+      h("div", { class: "actions" }, [
+        h("button", { class: "btn", type: "button", onclick: function () { startMatch(game.ch); } }, "Play Again"),
+        h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home")
+      ])
+    ]);
+  }
+
   // ---------- Reset ----------
   function confirmReset() {
     const back = h("div", { class: "modal-back", role: "dialog", "aria-modal": "true" }, h("div", { class: "modal" }, [
@@ -656,6 +956,7 @@
   }
   updateSoundBtn();
 
+  document.addEventListener("keydown", function (e) { if (activeKeys) activeKeys(e); });
   document.getElementById("brand").addEventListener("click", homeView);
   homeView();
 })();
