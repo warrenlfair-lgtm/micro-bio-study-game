@@ -1,0 +1,7 @@
+# Instructor course materials: keep local, do not publish
+*.pptx
+*.ppt
+*.pdf
+~$*
+
+.vscode/
