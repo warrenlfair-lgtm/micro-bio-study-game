@@ -19,6 +19,13 @@
     { id: "10", title: "Chapter 10 — Microbial Metabolism" },
     { id: "11A", title: "Chapter 11A — Physical Control of Microbes" }
   ];
+  const EXAM3 = { id: "exam3", title: "Exam 3 — November 2" };
+  const EXAM3_ALL = { id: "exam3", title: "All Exam 3 Chapters" };
+  const EXAM3_CHAPTERS = [
+    { id: "exam3-9", chapter: "9", title: "Chapter 9 — Microbial Nutrition & Growth" },
+    { id: "exam3-10", chapter: "10", title: "Chapter 10 — Microbial Metabolism" },
+    { id: "exam3-11B", chapter: "11B", title: "Chapter 11B — Chemical Control" }
+  ];
   const ALL = { id: "all", title: "All Chapters" };
   const REVIEW = { id: "review", title: "Needs Review" };
 
@@ -42,6 +49,7 @@
 
   const app = document.getElementById("app");
   const bank = (typeof QUESTIONS !== "undefined" && Array.isArray(QUESTIONS)) ? QUESTIONS : [];
+  const exam3Bank = (typeof EXAM3_QUESTIONS !== "undefined" && Array.isArray(EXAM3_QUESTIONS)) ? EXAM3_QUESTIONS : [];
   const cardBank = (typeof FLASHCARDS !== "undefined" && Array.isArray(FLASHCARDS)) ? FLASHCARDS : [];
   const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -229,6 +237,12 @@
   }
 
   function poolFor(id) {
+    if (id === "exam3") return exam3Bank.slice();
+    const exam3Chapter = EXAM3_CHAPTERS.find(function (chapter) { return chapter.id === id; });
+    if (exam3Chapter) return exam3Bank.filter(function (q) { return q.chapter === exam3Chapter.chapter; });
+    if (id === "exam3-review") return exam3Bank.filter(function (q) { const s = progress.questions[q.id]; return s && s.review; });
+    const reviewMatch = /^exam3-review-(9|10|11B)$/.exec(id);
+    if (reviewMatch) return exam3Bank.filter(function (q) { const s = progress.questions[q.id]; return q.chapter === reviewMatch[1] && s && s.review; });
     if (id === "all") return bank.slice();
     if (id === "review") return reviewQuestions();
     return bank.filter(function (q) { return q.chapter === id; });
@@ -244,6 +258,7 @@
 
   function slideRef(q) {
     if (q.slide) return "Review: " + q.slide;
+    if (q.id.indexOf("exam3-") === 0) return "";
     const m = /-(\d+)$/.exec(q.id);
     const entry = typeof SLIDE_MAP !== "undefined" ? SLIDE_MAP[q.chapter] : null;
     const ref = entry && m ? entry.refs[parseInt(m[1], 10)] : null;
@@ -279,7 +294,7 @@
 
     function card(ch, cls, tag) {
       const n = poolFor(ch.id).length;
-      return h("button", { class: "card " + cls, type: "button", onclick: function () { modeView(ch); } }, [
+      return h("button", { class: "card " + cls, type: "button", onclick: function () { ch.id === "exam3" ? exam3ModeView() : modeView(ch); } }, [
         h("span", { class: "tag" }, tag),
         h("span", { class: "title" }, ch.title),
         h("span", { class: "meta" }, n + (n === 1 ? " question" : " questions"))
@@ -310,6 +325,8 @@
       })),
       h("h2", {}, "Chapters"),
       h("div", { class: "grid" }, cards),
+      h("h2", {}, "Exam 3 · November 2"),
+      h("div", { class: "grid" }, [card(EXAM3, "exam3", "Chapters 9, 10 & 11B")]),
       h("h2", {}, "Badges (" + earned + " / " + BADGES.length + ")"),
       h("div", { class: "badges" }, BADGES.map(function (b) {
         const on = !!progress.badges[b.id];
@@ -351,16 +368,66 @@
     ]);
   }
 
+  function exam3ModeView() {
+    stopTimer();
+    const sections = EXAM3_CHAPTERS.concat([EXAM3_ALL]);
+    render([
+      h("h1", {}, EXAM3.title),
+      h("p", { class: "sub" }, "Choose a chapter or mix all Exam 3 questions."),
+      h("div", { class: "grid" }, sections.map(function (section) {
+        const n = poolFor(section.id).length;
+        return h("button", { class: "card", type: "button", onclick: function () { exam3ModesView(section); } }, [
+          h("span", { class: "tag" }, section.id === "exam3" ? "Mixed practice" : "Chapter " + section.chapter),
+          h("span", { class: "title" }, section.title),
+          h("span", { class: "meta" }, n + " questions")
+        ]);
+      })),
+      h("div", { class: "actions" }, h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home"))
+    ]);
+  }
+
+  function exam3ModesView(ch) {
+    stopTimer();
+    const n = poolFor(ch.id).length;
+    const reviewId = ch.id === "exam3" ? "exam3-review" : "exam3-review-" + ch.chapter;
+    const review = { id: reviewId, title: ch.title + " — Missed Questions" };
+    const missed = poolFor(reviewId).length;
+    function option(title, tag, desc, available, action) {
+      return h("button", { class: "card", type: "button", disabled: !available, onclick: action }, [
+        h("span", { class: "tag" }, tag),
+        h("span", { class: "title" }, title),
+        h("span", { class: "meta" }, desc)
+      ]);
+    }
+    render([
+      h("h1", {}, ch.title),
+      h("p", { class: "sub" }, n + " questions in this pool."),
+      h("div", { class: "grid" }, [
+        option("Study Mode", "Learn", "All questions · instant feedback and explanations", n > 0, function () { startGame(ch, "study"); }),
+        option("10-question quiz", "Quiz", "Immediate feedback after each answer", n >= 10, function () { startGame(ch, "quiz", 10); }),
+        option("25-question quiz", "Quiz", "Immediate feedback after each answer", n >= 25, function () { startGame(ch, "quiz", 25); }),
+        option("50-question quiz", "Quiz", "Immediate feedback after each answer", n >= 50, function () { startGame(ch, "quiz", 50); }),
+        option("Exam Simulation", "Test", "50 questions · review answers after submission", n >= 50, function () { startGame(ch, "exam", 50); }),
+        option("Missed Questions", "Review", missed + " questions to revisit", missed > 0, function () { startGame(review, "study"); })
+      ]),
+      h("div", { class: "actions" }, [
+        h("button", { class: "btn secondary", type: "button", onclick: exam3ModeView }, "All Exam 3 Sections"),
+        h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home")
+      ])
+    ]);
+  }
+
   // ---------- Game ----------
-  function startGame(ch, kind) {
+  function startGame(ch, kind, requestedSize) {
     stopTimer();
     let pool = shuffle(poolFor(ch.id));
-    if (kind === "quiz") pool = pool.slice(0, QUIZ_SIZE);
-    if (kind === "exam") pool = pool.slice(0, EXAM_SIZE);
+    if (kind === "quiz") pool = pool.slice(0, requestedSize || QUIZ_SIZE);
+    if (kind === "exam") pool = pool.slice(0, requestedSize || EXAM_SIZE);
     if (!pool.length) return;
     const game = {
       ch: ch,
       kind: kind,
+      requestedSize: requestedSize,
       items: pool.map(prepare), // unique questions only, so none repeat within a session
       index: 0,
       score: 0,
@@ -420,7 +487,7 @@
       actions.push(h("button", { class: "btn secondary", type: "button", onclick: function () { game.index--; showQuestion(game); } }, "Previous"));
     }
     actions.push(nextBtn);
-    actions.push(h("button", { class: "btn secondary", type: "button", onclick: function () { startGame(game.ch, game.kind); } }, "Restart"));
+    actions.push(h("button", { class: "btn secondary", type: "button", onclick: function () { startGame(game.ch, game.kind, game.requestedSize); } }, "Restart"));
     actions.push(h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home"));
 
     function pick(i) {
@@ -460,7 +527,7 @@
 
     render(header(game).concat([
       h("div", { class: "qcard" }, [
-        h("div", { class: "topic" }, item.q.topic || ""),
+        h("div", { class: "topic" }, item.q.id.indexOf("exam3-") === 0 ? "Chapter " + item.q.chapter + " · " + item.q.topic : (item.q.topic || "")),
         h("div", { class: "qtext" }, item.q.question),
         h("div", { class: "choices" }, choiceEls),
         feedbackBox
@@ -471,7 +538,7 @@
 
   function resultActions(game) {
     return h("div", { class: "actions" }, [
-      h("button", { class: "btn", type: "button", onclick: function () { startGame(game.ch, game.kind); } }, "Restart"),
+      h("button", { class: "btn", type: "button", onclick: function () { startGame(game.ch, game.kind, game.requestedSize); } }, "Restart"),
       h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home")
     ]);
   }
@@ -641,8 +708,15 @@
 
   // ---------- Flashcards ----------
   const LEARNING = { id: "learning", title: "Still Learning" };
+  const EXAM3_FLASHCARD_DECKS = [
+    { id: "exam3-9", title: "Chapter 9 — Microbial Nutrition & Growth", tag: "Chapter 9" },
+    { id: "exam3-10", title: "Chapter 10 — Microbial Metabolism", tag: "Chapter 10" },
+    { id: "exam3-11B", title: "Chapter 11B — Chemical Control", tag: "Chapter 11B" },
+    { id: "exam3-flash-all", title: "All Exam 3 Chapters", tag: "Mix" }
+  ];
 
   function flashPool(id) {
+    if (id === "exam3-flash-all") return cardBank.filter(function (c) { return c.id.indexOf("exam3-fc-") === 0; });
     if (id === "all") return cardBank.slice();
     if (id === "learning") return cardBank.filter(function (c) { const s = progress.cards[c.id]; return s && s.learning; });
     return cardBank.filter(function (c) { return c.chapter === id; });
@@ -678,12 +752,16 @@
     const items = CHAPTERS.map(function (c) { return choice(c, "Chapter " + c.id, ""); });
     items.push(choice(ALL, "Mix", "all"));
     items.push(choice(LEARNING, "Practice", "review"));
+    const exam3Items = EXAM3_FLASHCARD_DECKS.map(function (deck) { return choice(deck, deck.tag, "flash"); });
     render([
       h("h1", {}, "Flashcard Arena"),
       h("p", { class: "sub" }, cardBank.length
         ? "Mastered " + flashMastered() + " of " + cardBank.length + " cards. Choose a deck."
         : "No flashcards yet. Add them to flashcards.js."),
+      h("h2", {}, "Previous Exam Decks"),
       h("div", { class: "grid" }, items),
+      h("h2", {}, "Exam 3 · November 2"),
+      h("div", { class: "grid" }, exam3Items),
       h("div", { class: "actions" }, h("button", { class: "btn secondary", type: "button", onclick: homeView }, "Return Home"))
     ]);
   }
