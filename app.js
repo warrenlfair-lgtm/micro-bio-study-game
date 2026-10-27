@@ -304,7 +304,6 @@
     const cards = CHAPTERS.map(function (c) { return card(c, "", "Chapter " + c.id); });
     cards.push(card(ALL, "all", "Mix"));
     cards.push(card(REVIEW, "review", "Practice"));
-    cards.push(flashTile());
 
     const earned = BADGES.filter(function (b) { return progress.badges[b.id]; }).length;
 
@@ -327,6 +326,8 @@
       h("div", { class: "grid" }, cards),
       h("h2", {}, "Exam 3 · November 2"),
       h("div", { class: "grid" }, [card(EXAM3, "exam3", "Chapters 9, 10 & 11B")]),
+      h("h2", {}, "Flashcards"),
+      h("div", { class: "grid" }, [flashTile()]),
       h("h2", {}, "Badges (" + earned + " / " + BADGES.length + ")"),
       h("div", { class: "badges" }, BADGES.map(function (b) {
         const on = !!progress.badges[b.id];
